@@ -4,6 +4,7 @@
  */
 
 import fs from 'node:fs'
+import net from 'node:net'
 import { Readable } from 'node:stream'
 import { finished } from 'node:stream/promises'
 import { type Request, type Response, type NextFunction } from 'express'
@@ -13,6 +14,41 @@ import { UserModel } from '../models/user'
 import * as utils from '../lib/utils'
 import logger from '../lib/logger'
 
+function isPrivateOrLocalAddress (hostname: string): boolean {
+  const normalized = hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  if (normalized === 'localhost' || normalized === '::1') return true
+
+  const ipType = net.isIP(normalized)
+  if (ipType === 4) {
+    const [a, b] = normalized.split('.').map(Number)
+    return a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168)
+  }
+
+  if (ipType === 6) {
+    return normalized === '::1' ||
+      normalized.startsWith('fc') ||
+      normalized.startsWith('fd') ||
+      normalized.startsWith('fe80')
+  }
+
+  return false
+}
+
+function getValidatedImageUrl (input: string): string {
+  const parsed = new URL(input)
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('Only HTTP(S) URLs are allowed')
+  }
+  if (isPrivateOrLocalAddress(parsed.hostname)) {
+    throw new Error('Requests to local/private addresses are not allowed')
+  }
+  return parsed.toString()
+}
+
 export function profileImageUrlUpload () {
   return async (req: Request, res: Response, next: NextFunction) => {
     if (req.body.imageUrl !== undefined) {
@@ -21,7 +57,8 @@ export function profileImageUrlUpload () {
       const loggedInUser = security.authenticatedUsers.get(req.cookies.token)
       if (loggedInUser) {
         try {
-          const response = await fetch(url)
+          const safeUrl = getValidatedImageUrl(url)
+          const response = await fetch(safeUrl)
           if (!response.ok || !response.body) {
             throw new Error('url returned a non-OK status code or an empty body')
           }
